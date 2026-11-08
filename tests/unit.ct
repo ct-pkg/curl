@@ -1,0 +1,303 @@
+/*
+ * unit.ct - the curl package's repeatable unit suite.
+ *
+ * One assertion per behaviour; every public method is exercised at least
+ * once. The suite talks to tests/fixture_server.c on the loopback address
+ * that run.sh passes in CURL_BASE. Exit code is non-zero on any failure.
+ *
+ * Coverage (38 methods):
+ *   CurlEntry 1 : openCurl
+ *   Easy     33 : setUrl setRequest setUserAgent setUserPwd setFollow
+ *                 setMaxRedirs setTimeout setConnectTimeout setVerifyPeer
+ *                 setVerifyHost setCainfo addHeader setPostFields
+ *                 setBodyLimit setWriteFunction setHeaderFunction
+ *                 perform get post reset clearBody close destroy
+ *                 status message errorText responseCode effectiveUrl
+ *                 contentType totalTime sizeDownload body bodyLen
+ *   Lib       4 : globalInit globalCleanup version strerror
+ *
+ * Build and run through tests/run.sh.
+ *
+ * License: MIT (see LICENSE).
+ */
+
+#include <curl/curl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+import curl::Client;
+
+int passed = 0;
+int failed = 0;
+
+void check(int cond, const char *name)
+{
+    if (cond) {
+        passed = passed + 1;
+        printf("PASS %s\n", name);
+    } else {
+        failed = failed + 1;
+        printf("FAIL %s\n", name);
+    }
+}
+
+/* base + path, written into buf; returns buf. */
+char *join(const char *base, const char *path, char *buf, int cap)
+{
+    int i = 0;
+    int j = 0;
+
+    while (base[i] != 0 && i < cap - 1) {
+        buf[i] = base[i];
+        i = i + 1;
+    }
+    while (path[j] != 0 && i < cap - 1) {
+        buf[i] = path[j];
+        i = i + 1;
+        j = j + 1;
+    }
+    buf[i] = 0;
+    return buf;
+}
+
+char *at(const char *path, char *buf)
+{
+    char *base = getenv("CURL_BASE");
+
+    if (base == 0) base = "http://127.0.0.1:1";
+    return join(base, path, buf, 512);
+}
+
+size_t on_write(void *ptr, size_t size, size_t nmemb, void *ud)
+{
+    int *count = (int *)ud;
+
+    (void)ptr;
+    *count = *count + (int)(size * nmemb);
+    return size * nmemb;
+}
+
+size_t on_header(void *ptr, size_t size, size_t nmemb, void *ud)
+{
+    int *count = (int *)ud;
+
+    (void)ptr;
+    *count = *count + 1;
+    return size * nmemb;
+}
+
+int main(void)
+{
+    char u[512];
+    CurlEasy *c;
+    int n;
+    int rc;
+
+    check(curl::Lib.globalInit() == CURLE_OK, "Lib.globalInit returns CURLE_OK");
+    check(strncmp(curl::Lib.version(), "libcurl", 7) == 0,
+          "Lib.version starts with libcurl");
+    check(strcmp(curl::Lib.strerror(CURLE_OK), "No error") == 0,
+          "Lib.strerror(CURLE_OK) is 'No error'");
+    check(strlen(curl::Lib.strerror(CURLE_COULDNT_CONNECT)) > 0,
+          "Lib.strerror(7) is non-empty");
+
+    /* ---- openCurl --------------------------------------------------- */
+    c = at("/hello", u).openCurl();
+    check(c != 0, "openCurl returns a handle");
+    check(c.status() == 0, "openCurl leaves status at 0");
+    c.destroy();
+
+    c = "".openCurl();
+    check(c != 0, "openCurl accepts an empty URL (setUrl later)");
+    c.destroy();
+
+    /* ---- setUrl / perform / reading -------------------------------- */
+    c = "http://127.0.0.1:1/".openCurl();
+    c.setUrl(at("/hello", u));
+    c.perform();
+    check(c.status() == CURLE_OK, "setUrl + perform succeeds");
+    check(c.responseCode() == 200, "responseCode is 200");
+    check(strcmp(c.body(), "hello, curl\n") == 0, "body matches the fixture");
+    check(c.bodyLen() == 12, "bodyLen is 12");
+    check(strcmp(c.contentType(), "text/plain") == 0, "contentType is text/plain");
+    check(c.totalTime() > 0.0, "totalTime is positive");
+    check(c.sizeDownload() >= 12, "sizeDownload covers the body");
+    check(strcmp(c.message(), "No error") == 0, "message is 'No error'");
+    check(c.effectiveUrl()[0] != 0, "effectiveUrl is non-empty");
+    c.destroy();
+
+    /* ---- setRequest ------------------------------------------------ */
+    c = at("/echo", u).openCurl();
+    c.setRequest("PUT").setPostFields("abc", 3).perform();
+    check(c.responseCode() == 200, "setRequest(PUT) reaches the fixture");
+    check(strcmp(c.body(), "abc") == 0, "setRequest keeps the body");
+    c.destroy();
+
+    /* ---- setUserAgent ---------------------------------------------- */
+    c = at("/ua", u).openCurl();
+    c.setUserAgent("ct-curl/unit").perform();
+    check(strcmp(c.body(), "ct-curl/unit") == 0, "setUserAgent reaches the wire");
+    c.destroy();
+
+    /* ---- setUserPwd ------------------------------------------------ */
+    c = at("/auth", u).openCurl();
+    c.setUserPwd("user:pass").perform();
+    check(c.responseCode() == 200, "setUserPwd authenticates (200)");
+    check(strcmp(c.body(), "ok") == 0, "setUserPwd body is 'ok'");
+    c.destroy();
+
+    c = at("/auth", u).openCurl();
+    c.setUserPwd("user:wrong").perform();
+    check(c.responseCode() == 401, "setUserPwd with a bad password gets 401");
+    c.destroy();
+
+    /* ---- setFollow / setMaxRedirs ---------------------------------- */
+    c = at("/redirect", u).openCurl();
+    c.setFollow(1).perform();
+    check(c.status() == CURLE_OK, "setFollow(1) performs");
+    check(c.responseCode() == 200, "setFollow follows to /hello");
+    check(strcmp(c.body(), "hello, curl\n") == 0, "setFollow lands on the body");
+    check(strstr(c.effectiveUrl(), "/hello") != 0,
+          "setFollow updates effectiveUrl to /hello");
+    c.destroy();
+
+    c = at("/redirect", u).openCurl();
+    c.setFollow(1).setMaxRedirs(0).perform();
+    check(c.status() == CURLE_TOO_MANY_REDIRECTS,
+          "setMaxRedirs(0) refuses to follow");
+    c.destroy();
+
+    /* ---- setTimeout / setConnectTimeout ---------------------------- */
+    c = at("/slow", u).openCurl();
+    c.setTimeout(1).perform();
+    check(c.status() == CURLE_OPERATION_TIMEDOUT, "setTimeout(1) times out");
+    check(strlen(c.message()) > 0, "message explains the timeout");
+    check(strlen(c.errorText()) > 0, "errorText explains the timeout");
+    c.destroy();
+
+    c = at("/hello", u).openCurl();
+    c.setConnectTimeout(2).perform();
+    check(c.status() == CURLE_OK, "setConnectTimeout(2) succeeds");
+    c.destroy();
+
+    /* ---- TLS options are inert on http but must be accepted -------- */
+    c = at("/hello", u).openCurl();
+    c.setVerifyPeer(0).setVerifyHost(0).setCainfo("/etc/ssl/cert.pem").perform();
+    check(c.status() == CURLE_OK, "setVerifyPeer/setVerifyHost/setCainfo accepted");
+    check(c.responseCode() == 200, "TLS setters do not break plain http");
+    c.destroy();
+
+    /* ---- addHeader -------------------------------------------------- */
+    c = at("/header", u).openCurl();
+    c.addHeader("X-Test", "one").addHeader("X-Test", "two").perform();
+    check(strcmp(c.body(), "two") == 0,
+          "addHeader appends; the last value wins");
+    c.destroy();
+
+    /* ---- setPostFields --------------------------------------------- */
+    c = at("/echo", u).openCurl();
+    c.setPostFields("a=1&b=2", 7).perform();
+    check(strcmp(c.body(), "a=1&b=2") == 0, "setPostFields sends the body");
+
+    c.clearBody().setPostFields("z", 1).perform();
+    check(strcmp(c.body(), "z") == 0, "setPostFields can replace the body");
+    c.destroy();
+
+    /* ---- setBodyLimit ---------------------------------------------- */
+    c = at("/large", u).openCurl();
+    c.setBodyLimit(10).perform();
+    check(c.status() == CURLE_WRITE_ERROR, "setBodyLimit aborts on overflow");
+    check(c.bodyLen() <= 10, "setBodyLimit keeps the buffer under the limit");
+    c.destroy();
+
+    /* ---- setWriteFunction ------------------------------------------ */
+    n = 0;
+    c = at("/hello", u).openCurl();
+    c.setWriteFunction(on_write, &n).perform();
+    check(c.status() == CURLE_OK, "setWriteFunction performs");
+    check(n == 12, "setWriteFunction receives all 12 bytes");
+    check(c.bodyLen() == 0, "setWriteFunction bypasses the default sink");
+
+    n = 0;
+    c.setWriteFunction(0, 0).perform();
+    check(c.bodyLen() == 12, "setWriteFunction(0) restores the default sink");
+    c.destroy();
+
+    /* ---- setHeaderFunction ----------------------------------------- */
+    n = 0;
+    c = at("/hello", u).openCurl();
+    c.setHeaderFunction(on_header, &n).perform();
+    check(n > 0, "setHeaderFunction sees at least one header line");
+    c.destroy();
+
+    /* ---- get / post ------------------------------------------------ */
+    at("/hello", u);
+    c = u.openCurl().get();
+    check(c.responseCode() == 200, "get() performs a GET");
+    check(strcmp(c.body(), "hello, curl\n") == 0, "get() body matches");
+    c.destroy();
+
+    at("/echo", u);
+    c = u.openCurl().post("x=1", 3);
+    check(c.responseCode() == 200, "post() performs a POST");
+    check(strcmp(c.body(), "x=1") == 0, "post() sends the body");
+    c.destroy();
+
+    /* ---- reset / clearBody ----------------------------------------- */
+    c = at("/hello", u).openCurl();
+    c.addHeader("X-Test", "1").setPostFields("abc", 3).perform();
+    c.reset();
+    check(c.bodyLen() == 0, "reset clears the response body");
+    check(c.status() == 0, "reset clears status");
+    c.setUrl(at("/echo", u)).get();
+    check(c.responseCode() == 200, "reset keeps the handle usable");
+    check(strcmp(c.body(), "") == 0,
+          "reset drops the POST body and the header list");
+    c.destroy();
+
+    at("/hello", u);
+    c = u.openCurl().perform();
+    check(c.bodyLen() == 12, "clearBody starts from a full body");
+    c.clearBody();
+    check(c.bodyLen() == 0, "clearBody empties the body");
+    check(strcmp(c.body(), "") == 0, "clearBody keeps a readable string");
+    c.destroy();
+
+    /* ---- close / destroy ------------------------------------------- */
+    at("/hello", u);
+    c = u.openCurl().perform();
+    c.close();
+    check(c.status() == CURLE_OK, "close keeps the last status readable");
+    c.perform();
+    check(c.status() == CURLE_FAILED_INIT, "perform after close reports FAILED_INIT");
+    c.close();
+    check(c.status() == CURLE_FAILED_INIT, "close is idempotent");
+    c.destroy();
+
+    /* ---- error path ------------------------------------------------ */
+    at("/missing", u);
+    c = u.openCurl().perform();
+    check(c.status() == CURLE_OK, "404 is not a CURLcode error");
+    check(c.responseCode() == 404, "responseCode is 404");
+    c.destroy();
+
+    c = "http://127.0.0.1:1/".openCurl().setConnectTimeout(1).perform();
+    check(c.status() == CURLE_COULDNT_CONNECT, "connection refused is reported");
+    check(strlen(c.errorText()) > 0, "errorText explains the failure");
+    c.destroy();
+
+    /* ---- a 0 handle must not crash --------------------------------- */
+    c = 0;
+    check(c.status() == CURLE_FAILED_INIT, "status on 0 is FAILED_INIT");
+    check(strcmp(c.body(), "") == 0, "body on 0 is an empty string");
+    check(c.bodyLen() == 0, "bodyLen on 0 is 0");
+    c.destroy();
+
+    rc = curl::Lib.globalInit();
+    check(rc == CURLE_OK, "globalInit is repeatable");
+    curl::Lib.globalCleanup();
+
+    printf("SUMMARY passed=%d failed=%d\n", passed, failed);
+    return failed == 0 ? 0 : 1;
+}

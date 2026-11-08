@@ -1,0 +1,153 @@
+/*
+ * chain.ct - the chaining regression suite.
+ *
+ * Each case is one of the shapes the design promised. If the compiler ever
+ * stops letting a method call be a receiver, or stops inlining the chain
+ * without temporaries, one of these stops compiling or starts failing.
+ *
+ *   1. a string literal is a receiver              "...".openCurl()
+ *   2. a method result is a receiver               x.openCurl().setTimeout(5)
+ *   3. three-plus segments in one expression       .setTimeout().setFollow().perform()
+ *   4. the tail result binds to a variable         CurlEasy *c = ....perform();
+ *   5. a chain tail reads a value                  ....perform().status()
+ *   6. a chain tail destroys                       ....perform().destroy()
+ *   7. the middle of a chain binds, then continues CurlEasy *m = ...openCurl().setTimeout(5);
+ *   8. a setter returns the receiver itself        a.setTimeout(5) == a
+ *
+ * Build and run through tests/run.sh.
+ *
+ * License: MIT (see LICENSE).
+ */
+
+#include <curl/curl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+import curl::Client;
+
+int passed = 0;
+int failed = 0;
+
+void check(int cond, const char *name)
+{
+    if (cond) {
+        passed = passed + 1;
+        printf("PASS %s\n", name);
+    } else {
+        failed = failed + 1;
+        printf("FAIL %s\n", name);
+    }
+}
+
+char *join(const char *base, const char *path, char *buf, int cap)
+{
+    int i = 0;
+    int j = 0;
+
+    while (base[i] != 0 && i < cap - 1) {
+        buf[i] = base[i];
+        i = i + 1;
+    }
+    while (path[j] != 0 && i < cap - 1) {
+        buf[i] = path[j];
+        i = i + 1;
+        j = j + 1;
+    }
+    buf[i] = 0;
+    return buf;
+}
+
+char *at(const char *path, char *buf)
+{
+    char *base = getenv("CURL_BASE");
+
+    if (base == 0) base = "http://127.0.0.1:1";
+    return join(base, path, buf, 512);
+}
+
+int main(void)
+{
+    char u[512];
+    char e[512];
+    char act[512];
+    CurlEasy *c;
+    CurlEasy *mid;
+
+    curl::Lib.globalInit();
+
+    /* 1. literal receiver */
+    c = "http://127.0.0.1:1/".openCurl().setConnectTimeout(1);
+    check(c != 0, "case 1: a string literal is a receiver");
+    c.destroy();
+
+    /* 2 + 3 + 4: method result as receiver, four segments, tail binds */
+    at("/hello", u);
+    c = u.openCurl().setTimeout(5).setFollow(1).perform();
+    check(c != 0, "case 2/4: the chain result binds to CurlEasy *");
+    check(c.status() == CURLE_OK, "case 3: four segments perform");
+    check(c.responseCode() == 200, "case 3: the request reached the fixture");
+    check(strcmp(c.body(), "hello, curl\n") == 0, "case 3: the body is readable");
+    c.destroy();
+
+    /* 7: bind the middle, keep chaining through the same object */
+    mid = u.openCurl().setTimeout(5);
+    check(mid != 0, "case 7: the middle of a chain binds");
+    mid.setFollow(1).addHeader("X-Test", "chain").perform();
+    check(mid.responseCode() == 200, "case 7: the rest of the chain still works");
+    check(strcmp(mid.body(), "hello, curl\n") == 0, "case 7: body intact");
+    mid.destroy();
+
+    /* 5: read a value at the tail */
+    {
+        int rc = u.openCurl().setTimeout(5).perform().status();
+        check(rc == CURLE_OK, "case 5: perform().status() at the tail");
+    }
+    {
+        int code = u.openCurl().setTimeout(5).perform().responseCode();
+        check(code == 200, "case 5: perform().responseCode() at the tail");
+    }
+
+    /* 8: the receiver identity is preserved through the chain */
+    c = u.openCurl();
+    mid = c.setTimeout(5);
+    check(c == mid, "case 8: setTimeout returns the receiver itself");
+    mid = c.setFollow(1);
+    check(c == mid, "case 8: setFollow returns the receiver itself");
+    mid = c.addHeader("X-Test", "id");
+    check(c == mid, "case 8: addHeader returns the receiver itself");
+    mid = c.perform();
+    check(c == mid, "case 8: perform returns the receiver itself");
+    mid = c.clearBody();
+    check(c == mid, "case 8: clearBody returns the receiver itself");
+    c.destroy();
+
+    /* get / post participate in the chain too */
+    c = u.openCurl().setTimeout(5).get();
+    check(c.responseCode() == 200, "chain: get() terminates the chain");
+    check(strcmp(c.body(), "hello, curl\n") == 0, "chain: get() body");
+    c.destroy();
+
+    at("/echo", e);
+    c = e.openCurl().setTimeout(5).setPostFields("k=v", 3).post("k=v", 3);
+    check(c.responseCode() == 200, "chain: setPostFields().post()");
+    check(strcmp(c.body(), "k=v") == 0, "chain: post body echoed");
+    c.destroy();
+
+    /* a chain through a second handle, written in the middle of a statement */
+    at("/hello", act);
+    c = act.openCurl().setTimeout(5).setFollow(1);
+    check(c.status() == 0, "chain: configuration-only chain is valid as a value");
+    c.perform();
+    check(c.responseCode() == 200, "chain: configuration chain performs later");
+    c.destroy();
+
+    /* 6: perform then destroy in one statement */
+    act.openCurl().setTimeout(5).perform().destroy();
+    check(1, "case 6: perform().destroy() is a complete statement");
+
+    curl::Lib.globalCleanup();
+
+    printf("SUMMARY passed=%d failed=%d\n", passed, failed);
+    return failed == 0 ? 0 : 1;
+}

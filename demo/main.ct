@@ -1,0 +1,69 @@
+/*
+ * demo/main.ct - the smallest end-to-end curl program.
+ *
+ *   ct build -I . --ldflags '-lcurl' demo/main.ct -o demo/demo
+ *   ./demo/demo                              # https://example.com
+ *   ./demo/demo https://curl.se/            # any URL
+ *
+ * tests/run.sh runs this against the loopback fixture and diffs the output
+ * with demo/expected.out, so the demo is a checked artifact, not just a
+ * sample.
+ *
+ * The whole request is one chain: the URL is the receiver, every
+ * configuration step returns the same handle, and `perform()` returns it
+ * again so `status()` can be read at the end.
+ *
+ * License: MIT (see LICENSE).
+ */
+
+#include <stdio.h>
+
+import curl::Client;
+
+int main(int argc, char **argv)
+{
+    const char *url = "https://example.com";
+    CurlEasy *c;
+    const char *b;
+    int i;
+
+    if (argc > 1) url = argv[1];
+
+    if (curl::Lib.globalInit() != 0) {
+        printf("curl: globalInit failed\n");
+        return 1;
+    }
+
+    c = url.openCurl()
+             .setTimeout(15)
+             .setFollow(1)
+             .setUserAgent("ct-curl-demo/0.1")
+             .addHeader("Accept", "text/plain, text/html;q=0.9")
+             .perform();
+
+    printf("url: %s\n", url);
+    if (c.status() != 0) {
+        printf("error: %d %s\n", c.status(), c.message());
+        if (c.errorText()[0] != 0) printf("detail: %s\n", c.errorText());
+        c.destroy();
+        curl::Lib.globalCleanup();
+        return 1;
+    }
+
+    printf("http: %d\n", c.responseCode());
+    printf("content-type: %s\n", c.contentType());
+    printf("bytes: %d\n", c.bodyLen());
+
+    b = c.body();
+    printf("body: ");
+    i = 0;
+    while (b[i] != 0 && b[i] != '\n' && i < 200) {
+        putchar(b[i]);
+        i = i + 1;
+    }
+    putchar('\n');
+
+    c.destroy();
+    curl::Lib.globalCleanup();
+    return 0;
+}

@@ -1,0 +1,27 @@
+# curl - the libcurl (easy handle) mapping package.
+#
+# One mapping unit (`curl/Client.m.ct`) plus a sibling C shim pair
+# (`curl/Client.shim.h` / `curl/Client.shim.c`).
+#
+# The surface is object-oriented: `"https://example.com".openCurl()` returns a
+# `CurlEasy *`, and every configuration / execution method returns that same
+# receiver, so a request is one expression:
+#
+#   "https://example.com".openCurl().setTimeout(60).setFollow(1).perform()
+#
+# `char *` only carries the constructor `openCurl`; everything else hangs off
+# `CurlEasy *`. The only namespace entries are the process-wide ones
+# (`globalInit` / `globalCleanup` / `version` / `strerror`).
+#
+# The package links the system libcurl; it vendors no upstream source.
+# `ct install` folds `ldflags` into the command it prints.
+#
+# `requires` is 0.20.3: the `pub type CurlEasy = struct ct_curl_easy;` alias is
+# the Phase 20 type-alias feature, which is **not released yet** (0.20.2 does
+# not have it). Until 0.20.3 ships, build with a worktree ct that carries the
+# alias change; see README section 2.3.
+name = curl
+version = 0.1.0
+licence = MIT
+ldflags = -lcurl
+requires = ct >= 0.20.3

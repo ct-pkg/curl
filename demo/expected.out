@@ -1,0 +1,5 @@
+url: <url>
+http: 200
+content-type: text/plain
+bytes: 12
+body: hello, curl

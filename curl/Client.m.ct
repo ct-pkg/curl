@@ -1,0 +1,136 @@
+/*
+ * Client.m.ct - the object-oriented surface of the curl package.
+ *
+ * Everything hangs off a type host:
+ *
+ *   `char *`        -> openCurl            (the only constructor)
+ *   `CurlEasy *`    -> configuration, execution, reading
+ *   `namespace curl`-> the four process-wide entries
+ *
+ * Configuration and execution methods return the receiver itself, so a whole
+ * request is one expression:
+ *
+ *   "https://example.com".openCurl().setTimeout(60).setFollow(1).perform()
+ *
+ * The chain is not a builder: every step acts on the same wrapper object, and
+ * the generated C is one nested call (no temporaries). The compiler
+ * prerequisite - a method call may itself be a receiver - was verified in
+ * docs/design.md section 6.
+ *
+ * `CurlEasy` is a `pub type` alias for the package-private `struct
+ * ct_curl_easy` declared by Client.shim.h, so callers never spell the C tag.
+ * Every recipe calls exactly one typed helper; no `CURLOPT_*` varargs leak
+ * into CT.
+ *
+ * License: MIT (see LICENSE).
+ */
+
+namespace curl;
+
+pub type CurlEasy = struct ct_curl_easy;
+
+/* The only thing `char *` does: turn a URL into an easy handle. Failure
+   returns 0; the chain then short-circuits through every setter. */
+pub trait CurlEntry {
+    CurlEasy *openCurl();
+}
+
+/* Configuration and execution. Every method here returns the receiver. */
+pub trait Easy {
+    /* configuration */
+    CurlEasy *setUrl(const char *url);
+    CurlEasy *setRequest(const char *method);
+    CurlEasy *setUserAgent(const char *ua);
+    CurlEasy *setUserPwd(const char *userpwd);
+    CurlEasy *setFollow(int on);
+    CurlEasy *setMaxRedirs(int n);
+    CurlEasy *setTimeout(int seconds);
+    CurlEasy *setConnectTimeout(int seconds);
+    CurlEasy *setVerifyPeer(int on);
+    CurlEasy *setVerifyHost(int level);
+    CurlEasy *setCainfo(const char *path);
+    CurlEasy *addHeader(const char *name, const char *value);
+    CurlEasy *setPostFields(const char *data, int len);
+    CurlEasy *setBodyLimit(int maxBytes);
+    CurlEasy *setWriteFunction(CurlWriteCb cb, void *ud);
+    CurlEasy *setHeaderFunction(CurlHeaderCb cb, void *ud);
+
+    /* execution */
+    CurlEasy *perform();
+    CurlEasy *get();
+    CurlEasy *post(const char *data, int len);
+    CurlEasy *reset();
+    CurlEasy *clearBody();
+    void close();
+    void destroy();
+
+    /* reading */
+    int status();
+    const char *message();
+    const char *errorText();
+    int responseCode();
+    const char *effectiveUrl();
+    const char *contentType();
+    double totalTime();
+    long long sizeDownload();
+    const char *body();
+    int bodyLen();
+}
+
+/* Process-wide only: there is no receiver to hang these on. No configuration
+   entry lives here. */
+pub trait Lib {
+    int globalInit();
+    void globalCleanup();
+    const char *version();
+    const char *strerror(int code);
+}
+
+map trait CurlEntry for type char * {
+    openCurl(url) -> ct_curl_open(url);
+}
+
+map trait Easy for type CurlEasy * {
+    setUrl(c, url) -> ct_curl_set_url(c, url);
+    setRequest(c, method) -> ct_curl_set_request(c, method);
+    setUserAgent(c, ua) -> ct_curl_set_user_agent(c, ua);
+    setUserPwd(c, userpwd) -> ct_curl_set_user_pwd(c, userpwd);
+    setFollow(c, on) -> ct_curl_set_follow(c, on);
+    setMaxRedirs(c, n) -> ct_curl_set_max_redirs(c, n);
+    setTimeout(c, seconds) -> ct_curl_set_timeout(c, seconds);
+    setConnectTimeout(c, seconds) -> ct_curl_set_connect_timeout(c, seconds);
+    setVerifyPeer(c, on) -> ct_curl_set_verify_peer(c, on);
+    setVerifyHost(c, level) -> ct_curl_set_verify_host(c, level);
+    setCainfo(c, path) -> ct_curl_set_cainfo(c, path);
+    addHeader(c, name, value) -> ct_curl_add_header(c, name, value);
+    setPostFields(c, data, len) -> ct_curl_set_post(c, data, len);
+    setBodyLimit(c, maxBytes) -> ct_curl_set_body_limit(c, maxBytes);
+    setWriteFunction(c, cb, ud) -> ct_curl_set_write_function(c, cb, ud);
+    setHeaderFunction(c, cb, ud) -> ct_curl_set_header_function(c, cb, ud);
+
+    perform(c) -> ct_curl_perform(c);
+    get(c) -> ct_curl_get(c);
+    post(c, data, len) -> ct_curl_post(c, data, len);
+    reset(c) -> ct_curl_reset(c);
+    clearBody(c) -> ct_curl_clear_body(c);
+    close(c) -> ct_curl_close(c);
+    destroy(c) -> ct_curl_destroy(c);
+
+    status(c) -> ct_curl_status(c);
+    message(c) -> ct_curl_message(c);
+    errorText(c) -> ct_curl_error_text(c);
+    responseCode(c) -> ct_curl_response_code(c);
+    effectiveUrl(c) -> ct_curl_effective_url(c);
+    contentType(c) -> ct_curl_content_type(c);
+    totalTime(c) -> ct_curl_total_time(c);
+    sizeDownload(c) -> ct_curl_size_download(c);
+    body(c) -> ct_curl_body(c);
+    bodyLen(c) -> ct_curl_body_len(c);
+}
+
+map trait Lib for namespace curl {
+    globalInit() -> ct_curl_global_init();
+    globalCleanup() -> ct_curl_global_cleanup();
+    version() -> ct_curl_version();
+    strerror(code) -> ct_curl_strerror(code);
+}
